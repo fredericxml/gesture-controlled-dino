@@ -1,7 +1,3 @@
-import { Hands } from '@mediapipe/hands';
-import { Camera } from '@mediapipe/camera_utils';
-import * as fp from 'fingerpose';
-
 // ==================================================
 //  Mobile UI Adjustment
 // ==================================================
@@ -21,158 +17,262 @@ function dispatchKey(type, key) {
 }
 
 const MIN_DETECTION_CONFIDENCE = 0.7; // Good interval: 0.7 - 0.75
-const STABLE_DETECTION_FRAME_COUNT = 2; // Frame-based Stability Filter
-const { GestureDescription, Finger, FingerCurl } = fp;
 
-// Define rock gestures
-const Rock = new GestureDescription('rock');
-[Finger.Index, Finger.Middle, Finger.Ring, Finger.Pinky].forEach(f => Rock.addCurl(f, FingerCurl.FullCurl));
-Rock.addCurl(Finger.Thumb, FingerCurl.HalfCurl);
-Rock.addCurl(Finger.Thumb, FingerCurl.NoCurl);
+function createGestureEstimator(fp) {
+    const { GestureDescription, Finger, FingerCurl } = fp;
 
-// Define paper gestures
-const Paper = new GestureDescription('paper');
-Finger.all.forEach(f => Paper.addCurl(f, FingerCurl.NoCurl));
+    // Define rock gestures
+    const Rock = new GestureDescription('rock');
+    [Finger.Index, Finger.Middle, Finger.Ring, Finger.Pinky].forEach(f => Rock.addCurl(f, FingerCurl.FullCurl));
+    Rock.addCurl(Finger.Thumb, FingerCurl.HalfCurl);
+    Rock.addCurl(Finger.Thumb, FingerCurl.NoCurl);
 
-// Define scissors gestures
-const Scissors = new GestureDescription('scissors');
-[Finger.Index, Finger.Middle].forEach(f => {
-    Scissors.addCurl(f, FingerCurl.NoCurl);
-    Scissors.addCurl(f, FingerCurl.HalfCurl);
-});
-[Finger.Ring, Finger.Pinky].forEach(f => {
-    Scissors.addCurl(f, FingerCurl.FullCurl);
-    Scissors.addCurl(f, FingerCurl.HalfCurl);
-});
+    // Define paper gestures
+    const Paper = new GestureDescription('paper');
+    Finger.all.forEach(f => Paper.addCurl(f, FingerCurl.NoCurl));
+
+    // Define scissors gestures
+    const Scissors = new GestureDescription('scissors');
+    [Finger.Index, Finger.Middle].forEach(f => {
+        Scissors.addCurl(f, FingerCurl.NoCurl);
+        Scissors.addCurl(f, FingerCurl.HalfCurl);
+    });
+    [Finger.Ring, Finger.Pinky].forEach(f => {
+        Scissors.addCurl(f, FingerCurl.FullCurl);
+        Scissors.addCurl(f, FingerCurl.HalfCurl);
+    });
+
+    return new fp.GestureEstimator([Rock, Paper, Scissors]);
+}
 
 
 
 // ==================================================
 //  Gesture Detection
 // ==================================================
-let model, camera, gestureEstimator;
-const { GestureEstimator: GE } = fp;
+let model, gestureEstimator, Camera;
+let cameraSession = null;
+let cameraTask = Promise.resolve();
+let gestureDuckActive = false;
 const videoElement = document.getElementById('camera-video');
 const messageElement = document.getElementById('camera-message');
-// const canvas = document.getElementById('canvas');
-// const ctx = canvas.getContext('2d');
 
-function drawLandmarks(landmarks) {
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    ctx.fillStyle = 'red';
-    for (let { x, y } of landmarks) {
-        // Mirror x because video is flipped (canvas isn't)
-        ctx.beginPath();
-        ctx.arc((1 - x) * canvas.width, y * canvas.height, 5, 0, 2 * Math.PI);
-        ctx.fill();
+// Select the highest-confidence gesture; prefer the last candidate on a tie.
+function getDetectedGesture(gestures) {
+    if (gestures.length === 0) return 'none';
+
+    return gestures.reduce((a, b) => (a.confidence > b.confidence ? a : b)).name;
+}
+
+function updateGestureMessage(message) {
+    if (messageElement.textContent !== message) messageElement.textContent = message;
+}
+
+function releaseGestureDuck() {
+    if (gestureDuckActive) {
+        dispatchKey('keyup', KEY_CODE_ARROW_DOWN);
+        gestureDuckActive = false;
     }
 }
 
-const gestureHistory = [];
-function filterStableGesture(newGesture) {
-    if (!newGesture) return 'none';
+function applyGesture(gesture) {
+    switch (gesture) {
+        case 'paper':
+            // Repeated key events preserve continuous jumping and interactions
+            // with keyboard controls and auto-play.
+            dispatchKey('keyup', KEY_CODE_ARROW_DOWN);
+            gestureDuckActive = false;
+            dispatchKey('keydown', KEY_CODE_SPACE_BAR);
+            updateGestureMessage('Gesture: Paper (jump)');
+            break;
+        case 'rock':
+            // Repeated duck events also trigger the game's airborne speed drop.
+            dispatchKey('keydown', KEY_CODE_ARROW_DOWN);
+            gestureDuckActive = true;
+            updateGestureMessage('Gesture: Rock (duck)');
+            break;
+        case 'scissors':
+            dispatchKey('keyup', KEY_CODE_ARROW_DOWN);
+            gestureDuckActive = false;
+            updateGestureMessage('Gesture: Scissors (run)');
+            break;
+        default:
+            releaseGestureDuck();
+            updateGestureMessage('Gesture: None');
+            break;
+    }
+}
 
-    gestureHistory.push(newGesture);
-    if (gestureHistory.length > STABLE_DETECTION_FRAME_COUNT) gestureHistory.shift();
-
-    const mostFrequentGesture = gestureHistory.reduce((acc, g) => ((acc[g] = (acc[g] || 0) + 1), acc), {});
-
-    return Object.keys(mostFrequentGesture).reduce((a, b) =>
-        mostFrequentGesture[a] > mostFrequentGesture[b] ? a : b
-    );
+function handleMissingHand() {
+    // Release the down key whenever no hand is detected.
+    dispatchKey('keyup', KEY_CODE_ARROW_DOWN);
+    gestureDuckActive = false;
+    updateGestureMessage('Gesture: None');
 }
 
 function runGestureDetection(results) {
-    // canvas.width = videoElement.videoWidth;
-    // canvas.height = videoElement.videoHeight;
-
     if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
         const landmarks = results.multiHandLandmarks[0];
-        // drawLandmarks(landmarks);
 
+        const videoWidth = videoElement.videoWidth;
+        const videoHeight = videoElement.videoHeight;
         const convertedLandmarks = landmarks.map(pt => [
-            // (1 - pt.x) * canvas.width,
-            // pt.y * canvas.height,
-            (1 - pt.x) * videoElement.videoWidth,
-            pt.y * videoElement.videoHeight,
+            (1 - pt.x) * videoWidth,
+            pt.y * videoHeight,
             pt.z
         ]);
 
         const est = gestureEstimator.estimate(convertedLandmarks, MIN_DETECTION_CONFIDENCE * 10);
-        if (est.gestures.length > 0) {
-            const best = est.gestures.reduce((a, b) => (a.confidence > b.confidence ? a : b));
-            const detectedGesture = filterStableGesture(best.name);
-
-            switch (detectedGesture) {
-                case 'paper':
-                    dispatchKey('keyup', KEY_CODE_ARROW_DOWN); // Ensure no duck
-                    dispatchKey('keydown', KEY_CODE_SPACE_BAR); // Jump
-                    messageElement.textContent = 'Gesture: Paper (jump)';
-                    break;
-                case 'rock':
-                    dispatchKey('keydown', KEY_CODE_ARROW_DOWN); // Duck
-                    messageElement.textContent = 'Gesture: Rock (duck)';
-                    break;
-                case 'scissors':
-                    dispatchKey('keyup', KEY_CODE_ARROW_DOWN); // Stop ducking
-                    messageElement.textContent = 'Gesture: Scissors (run)';
-                    break;
-                default:
-                    messageElement.textContent = 'Gesture: None';
-                    break;
-            }
-        }
+        applyGesture(getDetectedGesture(est.gestures));
     } else {
-        // ctx.clearRect(0, 0, canvas.width, canvas.height);
-        dispatchKey('keyup', KEY_CODE_ARROW_DOWN);
-        messageElement.textContent = 'Gesture: None';
+        handleMissingHand();
     }
 }
 
-function startCamera() {
-    try {
-        messageElement.textContent = 'Info: Loading detection tools';
-        camera.start();
-    } catch (err) {
-        messageElement.textContent = 'Info: Error accessing camera';
-        console.error('Error accessing camera:', err);
-    }
-}
+// ==================================================
+//  Camera and Model Lifecycle
+// ==================================================
+const MEDIAPIPE_HANDS_VERSION = '0.4.1675469240';
 
-function stopCamera() {
-    messageElement.textContent = 'Info: Stopping camera';
+async function setupModel(session) {
+    // Load the AI libraries only when gesture control is selected.
+    const [handsModule, cameraModule, fp] = await Promise.all([
+        import('@mediapipe/hands'),
+        import('@mediapipe/camera_utils'),
+        import('fingerpose')
+    ]);
+    if (cameraSession !== session) return;
 
-    if (videoElement.srcObject) {
-        videoElement.srcObject.getTracks().forEach(track => track.stop());
-        videoElement.srcObject = null;
-    } else {
-        messageElement.textContent = 'Info: No active camera';
-        console.log('No camera stream to stop.');
-    }
-}
-
-function setupModel() {
     messageElement.textContent = 'Info: Loading model';
-
-    gestureEstimator = new GE([Rock, Paper, Scissors]);
-    model = new Hands({ locateFile: file => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}` });
+    const { Hands } = handsModule;
+    Camera = cameraModule.Camera;
+    gestureEstimator = createGestureEstimator(fp);
+    model = new Hands({ locateFile: file => `https://cdn.jsdelivr.net/npm/@mediapipe/hands@${MEDIAPIPE_HANDS_VERSION}/${file}` });
     model.setOptions({
         maxNumHands: 1,
         modelComplexity: 1,
         minDetectionConfidence: MIN_DETECTION_CONFIDENCE,
         minTrackingConfidence: MIN_DETECTION_CONFIDENCE
     });
-    model.onResults(runGestureDetection);
-
-    messageElement.textContent = 'Info: Setting up camera';
-    camera = new Camera(videoElement, {
-        onFrame: async () => await model.send({ image: videoElement })
-    });
 }
 
-// Clean up on page unload
-window.addEventListener('beforeunload', () => {
+function stopCameraTracks() {
+    if (videoElement.srcObject) {
+        videoElement.srcObject.getTracks().forEach(track => track.stop());
+        videoElement.srcObject = null;
+    }
+}
+
+async function stopCameraUtility(session) {
+    try {
+        if (session.camera) await session.camera.stop();
+    } catch (err) {
+        console.error('Error stopping camera:', err);
+    } finally {
+        stopCameraTracks();
+    }
+}
+
+async function releaseCamera(session) {
+    // Wait for startup before stopping again: permission may have resolved late.
+    if (session.stopTask) await session.stopTask;
+    else if (session.camera) await stopCameraUtility(session);
+    if (session.inFlight) await session.inFlight.catch(() => {});
+    if (session.track) session.track.removeEventListener('ended', session.onEnded);
+
+    // Reuse the model after normal stops, but recreate it after a processing error.
+    if (session.resetModel && model) {
+        try {
+            await model.close();
+        } catch (err) {
+            console.error('Error closing model:', err);
+        }
+        model = null;
+    }
+}
+
+function stopCamera(message = 'Info: Stopping camera') {
+    const session = cameraSession;
+    cameraSession = null;
+    if (!session) return;
+
+    messageElement.textContent = message;
+    // Stop an active stream immediately. A pending permission request is cleaned
+    // up when it settles, before another session can begin.
+    if (session.started) session.stopTask = stopCameraUtility(session);
+    if (session.camera) stopCameraTracks();
+    releaseGestureDuck();
+    cameraTask = cameraTask.then(() => releaseCamera(session));
+}
+
+function failCamera(session, message, err) {
+    if (cameraSession !== session) return;
+    console.error(message, err);
+    stopCamera(message);
+}
+
+function startCamera() {
+    if (cameraSession) return cameraTask;
+    const session = { camera: null, started: false, inFlight: null, resetModel: false };
+    cameraSession = session;
+    messageElement.textContent = 'Info: Loading detection tools';
+
+    cameraTask = cameraTask.then(async () => {
+        if (cameraSession !== session) return;
+        try {
+            if (model == null) {
+                session.resetModel = true;
+                await setupModel(session);
+                if (cameraSession !== session) return;
+                session.resetModel = false;
+            }
+            model.onResults(results => {
+                if (cameraSession === session) runGestureDetection(results);
+            });
+
+            messageElement.textContent = 'Info: Setting up camera';
+            session.camera = new Camera(videoElement, {
+                onFrame: async () => {
+                    if (cameraSession !== session || session.inFlight) return;
+                    try {
+                        session.inFlight = window.gestureBenchmark
+                            ? window.gestureBenchmark.measure(() => model.send({ image: videoElement }))
+                            : model.send({ image: videoElement });
+                        await session.inFlight;
+                    } catch (err) {
+                        if (cameraSession === session) {
+                            session.resetModel = true;
+                            failCamera(session, 'Info: Error processing camera frame', err);
+                        }
+                    } finally {
+                        session.inFlight = null;
+                    }
+                }
+            });
+
+            messageElement.textContent = 'Info: Loading detection tools';
+            await session.camera.start();
+            session.started = true;
+            if (cameraSession !== session) return;
+            session.track = videoElement.srcObject?.getVideoTracks()[0];
+            if (!session.track || session.track.readyState !== 'live') {
+                throw new Error('Camera stream is not active');
+            }
+            session.onEnded = () => failCamera(session, 'Info: Camera disconnected');
+            session.track.addEventListener('ended', session.onEnded);
+        } catch (err) {
+            failCamera(session, 'Info: Error accessing camera or loading model', err);
+        }
+    });
+    return cameraTask;
+}
+
+// Release the camera on page exit and restore it when returning from cache.
+window.addEventListener('pagehide', () => {
     stopCamera();
+});
+window.addEventListener('pageshow', event => {
+    if (event.persisted && controlMode === 'gesture') startCamera();
 });
 
 
@@ -196,8 +296,6 @@ const autoPlayToggle = document.getElementById('autoPlay');
 
 // Game state
 let controlMode = 'keyboard';
-let cameraStream = null;
-let gestureInterval = null;
 let currentSpeed = 'normal';
 let currentJumpHeight = 'normal';
 let isPanelVisible = false;
@@ -231,9 +329,6 @@ tabs.forEach(tab => {
             cameraCard.classList.remove('hidden');
             cameraContainer.classList.remove('hidden');
 
-            if (model == null) {
-                setupModel();
-            }
             startCamera();
         } else {
             cameraCard.classList.add('hidden');

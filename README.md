@@ -1,4 +1,4 @@
-# Gesture Chrome Dino
+﻿# Gesture-Controlled Dino
 
 Control the Chrome Dino runner with real-time hand gestures. Use your webcam to interact with the game, or play with the keyboard.
 
@@ -35,7 +35,7 @@ Control the Chrome Dino runner with real-time hand gestures. Use your webcam to 
 
 ### MediaPipe Hands
 
-MediaPipe Hands is the default implementation, available from the main page (`/`). It uses:
+MediaPipe Hands is the default implementation, available from the main page (`/`). Hand-tracking libraries are loaded when gesture control is selected. An internet connection is required to download MediaPipe runtime assets. It uses:
 
 - `@mediapipe/hands` for hand landmark detection.
 - `@mediapipe/camera_utils` for webcam frame handling.
@@ -79,7 +79,21 @@ Preview the production build:
 npm run preview
 ```
 
-The build includes both the MediaPipe Hands page and the TensorFlow.js Handpose page.
+The production build is configured to include both the MediaPipe Hands page and the TensorFlow.js Handpose page. Open `/legacy/index.html` on the preview server to test the alternative implementation.
+
+## Tests
+
+Run the automated benchmark, camera lifecycle, gesture, and entry-point tests:
+
+```bash
+npm test
+```
+
+These tests use synthetic data and mocked browser/model APIs. A real webcam and browser are required for gameplay and performance validation.
+
+## Performance measurement
+
+See [BENCHMARK.md](./BENCHMARK.md) for the hand-tracking benchmark protocol. See [CHANGELOG.md](./CHANGELOG.md) for release changes.
 
 ## Project structure
 
@@ -98,11 +112,19 @@ gesture-controlled-dino/
 │   ├── poster.webp
 │   └── screenshot.gif
 ├── js/
+│   ├── benchmark.js
 │   ├── dino.js
 │   └── extension.js
 ├── legacy/
 │   ├── index.html
 │   └── extension.js
+├── tests/
+│   ├── benchmark.test.js
+│   ├── camera-lifecycle.test.js
+│   ├── entry-points.test.js
+│   └── release.test.js
+├── BENCHMARK.md
+├── CHANGELOG.md
 ├── index.html
 ├── main.js
 ├── package.json
