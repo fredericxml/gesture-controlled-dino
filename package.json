@@ -1,0 +1,19 @@
+{
+  "name": "gesture-controlled-dino",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 0.0.0.0",
+    "build": "vite build",
+    "preview": "vite preview --host 0.0.0.0"
+  },
+  "dependencies": {
+    "@mediapipe/camera_utils": "^0.3.1675466862",
+    "@mediapipe/hands": "^0.4.1675469240",
+    "fingerpose": "^0.1.0"
+  },
+  "devDependencies": {
+    "vite": "^6.3.1"
+  }
+}
